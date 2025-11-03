@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agave-scheduler-bindings = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397" }
-agave-scheduling-utils = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397" }
+agave-scheduler-bindings = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397", features = [
+    "agave-unstable-api",
+] }
+agave-scheduling-utils = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397", features = [
+    "agave-unstable-api",
+] }
 rts-alloc = "0.2.0"
 shaq = "0.2.0"
 signal-hook = "0.3.18"
