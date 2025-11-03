@@ -62,7 +62,7 @@ fn main() {
             allocator_size: 30 * 1024 * 1024 * 1024,
             allocator_handles: 1,
             tpu_to_pack_size: shaq::minimum_file_size::<TpuToPackMessage>(64 * 1024 * 1024),
-            progress_tracker_size: shaq::minimum_file_size::<ProgressMessage>(64 * 1024),
+            progress_tracker_size: shaq::minimum_file_size::<ProgressMessage>(20 * 64),
             pack_to_worker_size: shaq::minimum_file_size::<PackToWorkerMessage>(64 * 1024),
             worker_to_pack_size: shaq::minimum_file_size::<WorkerToPackMessage>(64 * 1024),
         },
