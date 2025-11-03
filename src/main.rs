@@ -3,13 +3,14 @@ use agave_scheduler_bindings::{
     SharableTransactionBatchRegion, SharableTransactionRegion, TpuToPackMessage,
     WorkerToPackMessage,
     pack_message_flags::{self, check_flags},
+    processed_codes, worker_message_types,
 };
 use agave_scheduling_utils::{
     handshake::{
         ClientLogon,
         client::{ClientSession, ClientWorkerSession},
     },
-    transaction_ptr::TransactionPtr,
+    transaction_ptr::{TransactionPtr, TransactionPtrBatch},
 };
 use agave_transaction_view::{
     transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
@@ -75,6 +76,10 @@ fn main() {
             &mut workers[NUM_WORKERS - 1],
             &mut queue,
         );
+
+        for worker in workers.iter_mut() {
+            handle_worker_messages(&allocator, worker)
+        }
     }
 }
 
@@ -164,6 +169,43 @@ fn handle_tpu_messages(
     }
 
     tpu_to_pack.finalize();
+}
+
+fn handle_worker_messages(allocator: &Allocator, worker: &mut ClientWorkerSession) {
+    worker.worker_to_pack.sync();
+
+    while let Some(message) = worker.worker_to_pack.try_read() {
+        let message = unsafe { message.as_ref() };
+
+        let batch = unsafe {
+            TransactionPtrBatch::from_sharable_transaction_batch_region(&message.batch, allocator)
+        };
+
+        let processed = match message.processed_code {
+            processed_codes::PROCESSED => true,
+            processed_codes::MAX_WORKING_SLOT_EXCEEDED => false,
+            processed_codes::INVALID => {
+                panic!("We produced a message agave did not understand!");
+            }
+            _ => {
+                panic!("agave produced a message we do not understand!")
+            }
+        };
+
+        match message.responses.tag {
+            worker_message_types::EXECUTION_RESPONSE => {
+                todo!("handle execution response");
+            }
+            worker_message_types::CHECK_RESPONSE => {
+                todo!("handle check response");
+            }
+            _ => {
+                panic!("agave sent a message with tag we do not understand!");
+            }
+        }
+    }
+
+    worker.worker_to_pack.finalize();
 }
 
 fn send_resolve_requests(
