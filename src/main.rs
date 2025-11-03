@@ -71,6 +71,7 @@ fn main() {
 
     let mut queue = VecDeque::with_capacity(QUEUE_CAPACITY);
     let mut account_locks = ThreadAwareAccountLocks::new(workers.len());
+    let mut in_progress = vec![0; workers.len()];
 
     let mut is_leader = false;
     while !exit.load(Ordering::Relaxed) {
@@ -90,7 +91,13 @@ fn main() {
         }
 
         if is_leader {
-            schedule(allocator, &mut workers, &mut queue, &mut account_locks);
+            schedule(
+                allocator,
+                &mut workers[..NUM_WORKERS - 1],
+                &mut queue,
+                &mut account_locks,
+                &mut in_progress,
+            );
         }
     }
 }
@@ -322,6 +329,7 @@ fn schedule(
     workers: &mut [ClientWorkerSession],
     queue: &mut VecDeque<TransactionEntry>,
     account_locks: &mut ThreadAwareAccountLocks,
+    in_progress: &mut [u64],
 ) {
     if queue.is_empty() {
         return;
@@ -349,7 +357,7 @@ fn schedule(
             |thread_set| {
                 thread_set
                     .contained_threads_iter()
-                    .min_by(|a, b| a.cmp(b))
+                    .min_by(|a, b| in_progress[*a].cmp(&in_progress[*b]))
                     .unwrap()
             },
         ) else {
@@ -388,6 +396,11 @@ fn schedule(
         }
 
         let Some(message) = working_batch.as_mut() else {
+            account_locks.unlock_accounts(
+                entry.writable_account_keys(),
+                entry.readonly_account_keys(),
+                thread_index,
+            );
             queue.push_back(entry);
             continue;
         };
@@ -406,6 +419,7 @@ fn schedule(
                 )
         };
         message.batch.num_transactions += 1;
+        in_progress[thread_index] += 1;
 
         if usize::from(message.batch.num_transactions) >= MAX_TRANSACTIONS_PER_MESSAGE {
             *working_batch = None;
