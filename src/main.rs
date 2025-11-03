@@ -3,7 +3,8 @@ use agave_scheduler_bindings::{
     SharableTransactionBatchRegion, SharableTransactionRegion, TpuToPackMessage,
     WorkerToPackMessage,
     pack_message_flags::{self, check_flags},
-    processed_codes, worker_message_types,
+    processed_codes,
+    worker_message_types::{self, parsing_and_sanitization_flags, resolve_flags},
 };
 use agave_scheduling_utils::{
     handshake::{
@@ -78,7 +79,7 @@ fn main() {
         );
 
         for worker in workers.iter_mut() {
-            handle_worker_messages(&allocator, worker)
+            handle_worker_messages(&allocator, worker, &mut queue)
         }
 
         if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
@@ -153,7 +154,11 @@ fn handle_tpu_messages(
     tpu_to_pack.finalize();
 }
 
-fn handle_worker_messages(allocator: &Allocator, worker: &mut ClientWorkerSession) {
+fn handle_worker_messages(
+    allocator: &Allocator,
+    worker: &mut ClientWorkerSession,
+    queue: &mut VecDeque<TransactionEntry>,
+) {
     worker.worker_to_pack.sync();
 
     while let Some(message) = worker.worker_to_pack.try_read() {
@@ -179,7 +184,61 @@ fn handle_worker_messages(allocator: &Allocator, worker: &mut ClientWorkerSessio
                 todo!("handle execution response");
             }
             worker_message_types::CHECK_RESPONSE => {
-                todo!("handle check response");
+                assert!(processed);
+                let responses = unsafe {
+                    CheckResponsesPtr::from_transaction_response_region(
+                        &message.responses,
+                        allocator,
+                    )
+                };
+
+                for (tx_ptr, response) in batch.iter().zip(responses.iter()) {
+                    // FIFO-demo only requests resolving of pubkeys,
+                    // just assert that other flags are not set.
+                    assert_eq!(response.fee_payer_balance_flags, 0);
+                    assert_eq!(response.status_check_flags, 0);
+
+                    // If the transaction failed to parse/sanitize drop it here.
+                    // If resolving failed, we drop.
+                    if response.parsing_and_sanitization_flags
+                        | parsing_and_sanitization_flags::FAILED
+                        != 0
+                        || response.resolve_flags | resolve_flags::FAILED != 0
+                    {
+                        unsafe { tx_ptr.free(allocator) };
+                        continue;
+                    }
+
+                    // Ensure we had successful resolution.
+                    assert_eq!(
+                        response.resolve_flags,
+                        resolve_flags::REQUESTED | resolve_flags::PERFORMED
+                    );
+
+                    let loaded_addresses = if response.resolved_pubkeys.num_pubkeys != 0 {
+                        Some(unsafe {
+                            PubkeysPtr::from_sharable_pubkeys(&response.resolved_pubkeys, allocator)
+                        })
+                    } else {
+                        None
+                    };
+
+                    // If queue is full we drop it.
+                    if queue.len() >= QUEUE_CAPACITY {
+                        loaded_addresses.map(|addresses| unsafe { addresses.free(allocator) });
+                        unsafe { tx_ptr.free(allocator) };
+                        continue;
+                    }
+
+                    let entry = TransactionEntry {
+                        view: SanitizedTransactionView::try_new_sanitized(tx_ptr, true)
+                            .expect("message corrupted"),
+                        loaded_addresses,
+                    };
+                    queue.push_back(entry);
+                }
+
+                responses.free_wrapper();
             }
             _ => {
                 panic!("agave sent a message with tag we do not understand!");
@@ -243,7 +302,10 @@ fn send_resolve_requests(
 mod utils {
     use std::ptr::NonNull;
 
-    use agave_scheduler_bindings::SharablePubkeys;
+    use agave_scheduler_bindings::{
+        SharablePubkeys, TransactionResponseRegion,
+        worker_message_types::{self, CheckResponse},
+    };
     use rts_alloc::Allocator;
     use solana_pubkey::Pubkey;
 
@@ -270,6 +332,37 @@ mod utils {
 
         pub unsafe fn free(self, allocator: &Allocator) {
             unsafe { allocator.free(self.ptr.cast()) };
+        }
+    }
+
+    pub struct CheckResponsesPtr<'a> {
+        ptr: NonNull<CheckResponse>,
+        count: usize,
+        allocator: &'a Allocator,
+    }
+
+    impl<'a> CheckResponsesPtr<'a> {
+        pub unsafe fn from_transaction_response_region(
+            transaction_response_region: &TransactionResponseRegion,
+            allocator: &'a Allocator,
+        ) -> Self {
+            debug_assert!(transaction_response_region.tag == worker_message_types::CHECK_RESPONSE);
+
+            Self {
+                ptr: allocator
+                    .ptr_from_offset(transaction_response_region.transaction_responses_offset)
+                    .cast(),
+                count: transaction_response_region.num_transaction_responses as usize,
+                allocator,
+            }
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = &CheckResponse> {
+            unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }.iter()
+        }
+
+        pub fn free_wrapper(self) {
+            unsafe { self.allocator.free(self.ptr.cast()) }
         }
     }
 }
