@@ -413,7 +413,7 @@ fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> 
 
     let mut new_is_leader = None;
     let message_count = progress_tracker.len();
-    for _ in 0..(message_count - 1) {
+    for _ in 0..(message_count.saturating_sub(1)) {
         let _ = progress_tracker.try_read();
     }
     if let Some(most_recent_message) = progress_tracker.try_read() {
