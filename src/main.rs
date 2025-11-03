@@ -69,6 +69,7 @@ fn main() {
 
     let mut queue = VecDeque::with_capacity(QUEUE_CAPACITY);
 
+    let mut is_leader = false;
     while !exit.load(Ordering::Relaxed) {
         handle_tpu_messages(
             allocator,
@@ -79,6 +80,10 @@ fn main() {
 
         for worker in workers.iter_mut() {
             handle_worker_messages(&allocator, worker)
+        }
+
+        if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
+            is_leader = new_is_leader;
         }
     }
 }
@@ -206,6 +211,23 @@ fn handle_worker_messages(allocator: &Allocator, worker: &mut ClientWorkerSessio
     }
 
     worker.worker_to_pack.finalize();
+}
+
+fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> Option<bool> {
+    progress_tracker.sync();
+
+    let mut new_is_leader = None;
+    let message_count = progress_tracker.len();
+    for _ in 0..(message_count - 1) {
+        let _ = progress_tracker.try_read();
+    }
+    if let Some(most_recent_message) = progress_tracker.try_read() {
+        let message = unsafe { most_recent_message.as_ref() };
+        new_is_leader = Some(message.leader_state == agave_scheduler_bindings::IS_LEADER);
+    }
+
+    progress_tracker.finalize();
+    new_is_leader
 }
 
 fn send_resolve_requests(
