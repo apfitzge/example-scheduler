@@ -21,7 +21,7 @@ use rts_alloc::Allocator;
 use shaq::Consumer;
 use solana_pubkey::Pubkey;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -72,6 +72,7 @@ fn main() {
     let mut queue = VecDeque::with_capacity(QUEUE_CAPACITY);
     let mut account_locks = ThreadAwareAccountLocks::new(workers.len());
     let mut in_progress = vec![0; workers.len()];
+    let mut offset_to_entry = HashMap::with_capacity(QUEUE_CAPACITY);
 
     let mut is_leader = false;
     while !exit.load(Ordering::Relaxed) {
@@ -80,10 +81,11 @@ fn main() {
             &mut tpu_to_pack,
             &mut workers[NUM_WORKERS - 1],
             &mut queue,
+            &mut offset_to_entry,
         );
 
         for worker in workers.iter_mut() {
-            handle_worker_messages(&allocator, worker, &mut queue)
+            handle_worker_messages(&allocator, worker, &mut queue, &mut offset_to_entry);
         }
 
         if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
@@ -95,6 +97,7 @@ fn main() {
                 allocator,
                 &mut workers[..NUM_WORKERS - 1],
                 &mut queue,
+                &offset_to_entry,
                 &mut account_locks,
                 &mut in_progress,
             );
@@ -103,6 +106,7 @@ fn main() {
 }
 
 struct TransactionEntry {
+    sharable_transaction: SharableTransactionRegion,
     view: SanitizedTransactionView<TransactionPtr>,
     loaded_addresses: Option<PubkeysPtr>,
 }
@@ -159,7 +163,8 @@ fn handle_tpu_messages(
     allocator: &Allocator,
     tpu_to_pack: &mut Consumer<TpuToPackMessage>,
     resolving_worker: &mut ClientWorkerSession,
-    queue: &mut VecDeque<TransactionEntry>,
+    queue: &mut VecDeque<usize>,
+    offset_to_entry: &mut HashMap<usize, TransactionEntry>,
 ) {
     tpu_to_pack.sync();
 
@@ -198,10 +203,18 @@ fn handle_tpu_messages(
         }
 
         // Non-ALT transactions go immediately to queue.
-        queue.push_back(TransactionEntry {
-            view,
-            loaded_addresses: None,
-        });
+        queue.push_back(message.transaction.offset);
+        offset_to_entry.insert(
+            message.transaction.offset,
+            TransactionEntry {
+                sharable_transaction: SharableTransactionRegion {
+                    offset: message.transaction.offset,
+                    length: message.transaction.length,
+                },
+                view,
+                loaded_addresses: None,
+            },
+        );
     }
 
     if !txs_to_resolve.is_empty() {
@@ -215,7 +228,8 @@ fn handle_tpu_messages(
 fn handle_worker_messages(
     allocator: &Allocator,
     worker: &mut ClientWorkerSession,
-    queue: &mut VecDeque<TransactionEntry>,
+    queue: &mut VecDeque<usize>,
+    offset_to_entry: &mut HashMap<usize, TransactionEntry>,
 ) {
     worker.worker_to_pack.sync();
 
@@ -288,12 +302,18 @@ fn handle_worker_messages(
                         continue;
                     }
 
+                    let offset = unsafe { tx_ptr.to_sharable_transaction_region(allocator) }.offset;
                     let entry = TransactionEntry {
+                        sharable_transaction: unsafe {
+                            tx_ptr.to_sharable_transaction_region(allocator)
+                        },
                         view: SanitizedTransactionView::try_new_sanitized(tx_ptr, true)
                             .expect("message corrupted"),
                         loaded_addresses,
                     };
-                    queue.push_back(entry);
+
+                    queue.push_back(offset);
+                    offset_to_entry.insert(offset, entry);
                 }
 
                 responses.free_wrapper();
@@ -327,7 +347,8 @@ fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> 
 fn schedule(
     allocator: &Allocator,
     workers: &mut [ClientWorkerSession],
-    queue: &mut VecDeque<TransactionEntry>,
+    queue: &mut VecDeque<usize>,
+    offset_to_entry: &HashMap<usize, TransactionEntry>,
     account_locks: &mut ThreadAwareAccountLocks,
     in_progress: &mut [u64],
 ) {
@@ -344,9 +365,10 @@ fn schedule(
     const MAX_ATTEMPTED: usize = 10_000;
 
     while attempted < MAX_ATTEMPTED {
-        let Some(entry) = queue.pop_front() else {
+        let Some(offset) = queue.pop_front() else {
             break;
         };
+        let entry = offset_to_entry.get(&offset).unwrap();
 
         attempted += 1;
 
@@ -361,7 +383,7 @@ fn schedule(
                     .unwrap()
             },
         ) else {
-            queue.push_back(entry);
+            queue.push_back(offset);
             continue;
         };
 
@@ -401,7 +423,7 @@ fn schedule(
                 entry.readonly_account_keys(),
                 thread_index,
             );
-            queue.push_back(entry);
+            queue.push_back(offset);
             continue;
         };
         let message = unsafe { message.as_mut() };
@@ -411,12 +433,10 @@ fn schedule(
                 .ptr_from_offset(message.batch.transactions_offset)
                 .cast::<SharableTransactionRegion>()
                 .add(usize::from(message.batch.num_transactions))
-                .write(
-                    entry
-                        .view
-                        .into_inner_data()
-                        .to_sharable_transaction_region(allocator),
-                )
+                .write(SharableTransactionRegion {
+                    offset: entry.sharable_transaction.offset,
+                    length: entry.sharable_transaction.length,
+                })
         };
         message.batch.num_transactions += 1;
         in_progress[thread_index] += 1;
