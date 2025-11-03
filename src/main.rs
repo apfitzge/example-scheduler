@@ -88,7 +88,7 @@ fn main() {
 
         for (worker_index, worker) in workers.iter_mut().enumerate() {
             handle_worker_messages(
-                &allocator,
+                allocator,
                 worker_index,
                 worker,
                 &mut queue,
@@ -352,9 +352,9 @@ fn handle_worker_messages(
                     // If the transaction failed to parse/sanitize drop it here.
                     // If resolving failed, we drop.
                     if response.parsing_and_sanitization_flags
-                        | parsing_and_sanitization_flags::FAILED
+                        & parsing_and_sanitization_flags::FAILED
                         != 0
-                        || response.resolve_flags | resolve_flags::FAILED != 0
+                        || response.resolve_flags & resolve_flags::FAILED != 0
                     {
                         unsafe { tx_ptr.free(allocator) };
                         continue;
@@ -376,7 +376,9 @@ fn handle_worker_messages(
 
                     // If queue is full we drop it.
                     if queue.len() >= QUEUE_CAPACITY {
-                        loaded_addresses.map(|addresses| unsafe { addresses.free(allocator) });
+                        if let Some(addresses) = loaded_addresses {
+                            unsafe { addresses.free(allocator) };
+                        }
                         unsafe { tx_ptr.free(allocator) };
                         continue;
                     }
@@ -540,9 +542,7 @@ fn send_resolve_requests(
         panic!("agave too far behind");
     };
 
-    let Some(batch_ptr) =
-        allocator.allocate((core::mem::size_of::<SharableTransactionRegion>() * txs.len()) as u32)
-    else {
+    let Some(batch_ptr) = allocator.allocate(core::mem::size_of_val(txs) as u32) else {
         panic!("failed to allocate");
     };
     unsafe { core::ptr::copy_nonoverlapping(txs.as_ptr(), batch_ptr.cast().as_ptr(), txs.len()) };
