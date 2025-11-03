@@ -85,6 +85,10 @@ fn main() {
         if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
             is_leader = new_is_leader;
         }
+
+        if is_leader {
+            schedule(&mut workers, &mut queue);
+        }
     }
 }
 
@@ -228,6 +232,10 @@ fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> 
 
     progress_tracker.finalize();
     new_is_leader
+}
+
+fn schedule(workers: &mut [ClientWorkerSession], queue: &mut VecDeque<TransactionEntry>) {
+    todo!()
 }
 
 fn send_resolve_requests(
