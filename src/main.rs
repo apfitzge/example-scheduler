@@ -1,5 +1,5 @@
 use agave_scheduler_bindings::{
-    MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, ProgressMessage, SharablePubkeys,
+    MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, ProgressMessage,
     SharableTransactionBatchRegion, SharableTransactionRegion, TpuToPackMessage,
     WorkerToPackMessage,
     pack_message_flags::{self, check_flags},
@@ -11,6 +11,7 @@ use agave_scheduling_utils::{
         ClientLogon,
         client::{ClientSession, ClientWorkerSession},
     },
+    thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadSet},
     transaction_ptr::{TransactionPtr, TransactionPtrBatch},
 };
 use agave_transaction_view::{
@@ -18,6 +19,7 @@ use agave_transaction_view::{
 };
 use rts_alloc::Allocator;
 use shaq::Consumer;
+use solana_pubkey::Pubkey;
 use std::{
     collections::VecDeque,
     sync::{
@@ -68,6 +70,7 @@ fn main() {
     let allocator = &allocators[0];
 
     let mut queue = VecDeque::with_capacity(QUEUE_CAPACITY);
+    let mut account_locks = ThreadAwareAccountLocks::new(workers.len());
 
     let mut is_leader = false;
     while !exit.load(Ordering::Relaxed) {
@@ -87,7 +90,7 @@ fn main() {
         }
 
         if is_leader {
-            schedule(&mut workers, &mut queue);
+            schedule(allocator, &mut workers, &mut queue, &mut account_locks);
         }
     }
 }
@@ -95,6 +98,54 @@ fn main() {
 struct TransactionEntry {
     view: SanitizedTransactionView<TransactionPtr>,
     loaded_addresses: Option<PubkeysPtr>,
+}
+
+impl TransactionEntry {
+    pub fn writable_account_keys(&self) -> impl Iterator<Item = &Pubkey> + Clone {
+        self.view
+            .static_account_keys()
+            .iter()
+            .chain(
+                self.loaded_addresses
+                    .iter()
+                    .flat_map(|loaded_addresses| loaded_addresses.as_slice().iter()),
+            )
+            .enumerate()
+            .filter(|(index, _)| self.requested_write(*index as u8))
+            .map(|(_index, key)| key)
+    }
+
+    pub fn readonly_account_keys(&self) -> impl Iterator<Item = &Pubkey> + Clone {
+        self.view
+            .static_account_keys()
+            .iter()
+            .chain(
+                self.loaded_addresses
+                    .iter()
+                    .flat_map(|loaded_addresses| loaded_addresses.as_slice().iter()),
+            )
+            .enumerate()
+            .filter(|(index, _)| !self.requested_write(*index as u8))
+            .map(|(_index, key)| key)
+    }
+
+    #[inline(always)]
+    fn requested_write(&self, index: u8) -> bool {
+        if index >= self.view.num_static_account_keys() {
+            let loaded_address_index = index.wrapping_sub(self.view.num_static_account_keys());
+            loaded_address_index < self.view.total_writable_lookup_accounts() as u8
+        } else {
+            index
+                < self
+                    .view
+                    .num_signatures()
+                    .wrapping_sub(self.view.num_readonly_signed_static_accounts())
+                || (index >= self.view.num_signatures()
+                    && index
+                        < (self.view.static_account_keys().len() as u8)
+                            .wrapping_sub(self.view.num_readonly_unsigned_static_accounts()))
+        }
+    }
 }
 
 fn handle_tpu_messages(
@@ -266,8 +317,105 @@ fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> 
     new_is_leader
 }
 
-fn schedule(workers: &mut [ClientWorkerSession], queue: &mut VecDeque<TransactionEntry>) {
-    todo!()
+fn schedule(
+    allocator: &Allocator,
+    workers: &mut [ClientWorkerSession],
+    queue: &mut VecDeque<TransactionEntry>,
+    account_locks: &mut ThreadAwareAccountLocks,
+) {
+    if queue.is_empty() {
+        return;
+    }
+
+    workers
+        .iter_mut()
+        .for_each(|worker| worker.pack_to_worker.sync());
+
+    let mut attempted = 0;
+    let mut working_batches = vec![None; workers.len()];
+    const MAX_ATTEMPTED: usize = 10_000;
+
+    while attempted < MAX_ATTEMPTED {
+        let Some(entry) = queue.pop_front() else {
+            break;
+        };
+
+        attempted += 1;
+
+        let Ok(thread_index) = account_locks.try_lock_accounts(
+            entry.writable_account_keys(),
+            entry.readonly_account_keys(),
+            ThreadSet::any(workers.len()),
+            |thread_set| {
+                thread_set
+                    .contained_threads_iter()
+                    .min_by(|a, b| a.cmp(b))
+                    .unwrap()
+            },
+        ) else {
+            queue.push_back(entry);
+            continue;
+        };
+
+        let working_batch = &mut working_batches[thread_index];
+        if working_batch.is_none() {
+            let pack_to_worker = &mut workers[thread_index].pack_to_worker;
+            let mut reserve_attempt = pack_to_worker.reserve();
+            if reserve_attempt.is_none() {
+                pack_to_worker.sync();
+                pack_to_worker.commit();
+                reserve_attempt = pack_to_worker.reserve();
+            }
+            let msg = reserve_attempt.map(|mut msg| {
+                // allocate a max-sized batch, and we just push in there.
+                let batch_region = allocator
+                    .allocate(
+                        (core::mem::size_of::<SharableTransactionRegion>()
+                            * MAX_TRANSACTIONS_PER_MESSAGE) as u32,
+                    )
+                    .expect("failed to allocate");
+                {
+                    let msg = unsafe { msg.as_mut() };
+                    msg.batch.num_transactions = 0;
+                    msg.batch.transactions_offset = unsafe { allocator.offset(batch_region) };
+                    msg.flags = pack_message_flags::EXECUTE;
+                    msg.max_working_slot = u64::MAX;
+                }
+                msg
+            });
+
+            *working_batch = msg;
+        }
+
+        let Some(message) = working_batch.as_mut() else {
+            queue.push_back(entry);
+            continue;
+        };
+        let message = unsafe { message.as_mut() };
+
+        unsafe {
+            allocator
+                .ptr_from_offset(message.batch.transactions_offset)
+                .cast::<SharableTransactionRegion>()
+                .add(usize::from(message.batch.num_transactions))
+                .write(
+                    entry
+                        .view
+                        .into_inner_data()
+                        .to_sharable_transaction_region(allocator),
+                )
+        };
+        message.batch.num_transactions += 1;
+
+        if usize::from(message.batch.num_transactions) >= MAX_TRANSACTIONS_PER_MESSAGE {
+            *working_batch = None;
+            workers[thread_index].pack_to_worker.commit();
+        };
+    }
+
+    workers
+        .iter_mut()
+        .for_each(|worker| worker.pack_to_worker.commit());
 }
 
 fn send_resolve_requests(
