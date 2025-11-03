@@ -15,10 +15,8 @@ use agave_scheduling_utils::{
 use agave_transaction_view::{
     transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
 };
-use core::ptr::NonNull;
 use rts_alloc::Allocator;
 use shaq::Consumer;
-use solana_pubkey::Pubkey;
 use std::{
     collections::VecDeque,
     sync::{
@@ -27,6 +25,7 @@ use std::{
     },
     time::Duration,
 };
+use utils::*;
 
 const NUM_WORKERS: usize = 5;
 const QUEUE_CAPACITY: usize = 100_000;
@@ -89,32 +88,6 @@ fn main() {
         if is_leader {
             schedule(&mut workers, &mut queue);
         }
-    }
-}
-
-struct PubkeysPtr {
-    ptr: NonNull<Pubkey>,
-    count: usize,
-}
-
-impl PubkeysPtr {
-    unsafe fn from_sharable_pubkeys(
-        sharable_pubkeys: &SharablePubkeys,
-        allocator: &Allocator,
-    ) -> Self {
-        let ptr = allocator.ptr_from_offset(sharable_pubkeys.offset).cast();
-        Self {
-            ptr,
-            count: sharable_pubkeys.num_pubkeys as usize,
-        }
-    }
-
-    fn as_slice(&self) -> &[Pubkey] {
-        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }
-    }
-
-    unsafe fn free(self, allocator: &Allocator) {
-        unsafe { allocator.free(self.ptr.cast()) };
     }
 }
 
@@ -265,4 +238,38 @@ fn send_resolve_requests(
         })
     };
     worker.pack_to_worker.commit();
+}
+
+mod utils {
+    use std::ptr::NonNull;
+
+    use agave_scheduler_bindings::SharablePubkeys;
+    use rts_alloc::Allocator;
+    use solana_pubkey::Pubkey;
+
+    pub struct PubkeysPtr {
+        ptr: NonNull<Pubkey>,
+        count: usize,
+    }
+
+    impl PubkeysPtr {
+        pub unsafe fn from_sharable_pubkeys(
+            sharable_pubkeys: &SharablePubkeys,
+            allocator: &Allocator,
+        ) -> Self {
+            let ptr = allocator.ptr_from_offset(sharable_pubkeys.offset).cast();
+            Self {
+                ptr,
+                count: sharable_pubkeys.num_pubkeys as usize,
+            }
+        }
+
+        pub fn as_slice(&self) -> &[Pubkey] {
+            unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }
+        }
+
+        pub unsafe fn free(self, allocator: &Allocator) {
+            unsafe { allocator.free(self.ptr.cast()) };
+        }
+    }
 }
