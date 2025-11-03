@@ -4,7 +4,9 @@ use agave_scheduler_bindings::{
     WorkerToPackMessage,
     pack_message_flags::{self, check_flags},
     processed_codes,
-    worker_message_types::{self, parsing_and_sanitization_flags, resolve_flags},
+    worker_message_types::{
+        self, not_included_reasons, parsing_and_sanitization_flags, resolve_flags,
+    },
 };
 use agave_scheduling_utils::{
     handshake::{
@@ -84,8 +86,16 @@ fn main() {
             &mut offset_to_entry,
         );
 
-        for worker in workers.iter_mut() {
-            handle_worker_messages(&allocator, worker, &mut queue, &mut offset_to_entry);
+        for (worker_index, worker) in workers.iter_mut().enumerate() {
+            handle_worker_messages(
+                &allocator,
+                worker_index,
+                worker,
+                &mut queue,
+                &mut offset_to_entry,
+                &mut account_locks,
+                &mut in_progress,
+            );
         }
 
         if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
@@ -227,9 +237,12 @@ fn handle_tpu_messages(
 
 fn handle_worker_messages(
     allocator: &Allocator,
+    worker_index: usize,
     worker: &mut ClientWorkerSession,
     queue: &mut VecDeque<usize>,
     offset_to_entry: &mut HashMap<usize, TransactionEntry>,
+    account_locks: &mut ThreadAwareAccountLocks,
+    in_progress: &mut [u64],
 ) {
     worker.worker_to_pack.sync();
 
@@ -253,7 +266,73 @@ fn handle_worker_messages(
 
         match message.responses.tag {
             worker_message_types::EXECUTION_RESPONSE => {
-                todo!("handle execution response");
+                if processed {
+                    let execution_responses_ptr = unsafe {
+                        ExecutionResponsesPtr::from_transaction_response_region(
+                            &message.responses,
+                            allocator,
+                        )
+                    };
+
+                    // Unlock and push back into queue.
+                    for (tx_ptr, response) in batch.iter().zip(execution_responses_ptr.iter()) {
+                        let offset =
+                            unsafe { tx_ptr.to_sharable_transaction_region(allocator).offset };
+                        let entry = offset_to_entry.get(&offset).unwrap();
+                        account_locks.unlock_accounts(
+                            entry.writable_account_keys(),
+                            entry.readonly_account_keys(),
+                            worker_index,
+                        );
+                        in_progress[worker_index] -= 1;
+
+                        // If rejected because of a cost-tracking error, we'll retry, but only if
+                        // queue is also under capacity.
+                        match response.not_included_reason {
+                            not_included_reasons::WOULD_EXCEED_ACCOUNT_DATA_BLOCK_LIMIT
+                            | not_included_reasons::WOULD_EXCEED_ACCOUNT_DATA_TOTAL_LIMIT
+                            | not_included_reasons::WOULD_EXCEED_MAX_ACCOUNT_COST_LIMIT
+                            | not_included_reasons::WOULD_EXCEED_MAX_BLOCK_COST_LIMIT
+                            | not_included_reasons::WOULD_EXCEED_MAX_VOTE_COST_LIMIT
+                                if queue.len() < QUEUE_CAPACITY =>
+                            {
+                                queue.push_back(offset);
+                            }
+                            _ => {
+                                let entry = offset_to_entry.remove(&offset).unwrap();
+                                if let Some(loaded_addresses) = entry.loaded_addresses {
+                                    unsafe { loaded_addresses.free(allocator) };
+                                }
+                                unsafe { tx_ptr.free(allocator) };
+                            }
+                        };
+                    }
+
+                    execution_responses_ptr.free_wrapper();
+                } else {
+                    // Unlock and push back into queue IF there is room.
+                    for tx_ptr in batch.iter() {
+                        let offset =
+                            unsafe { tx_ptr.to_sharable_transaction_region(allocator).offset };
+                        let entry = offset_to_entry.get(&offset).unwrap();
+                        account_locks.unlock_accounts(
+                            entry.writable_account_keys(),
+                            entry.readonly_account_keys(),
+                            worker_index,
+                        );
+                        in_progress[worker_index] -= 1;
+
+                        if queue.len() >= QUEUE_CAPACITY {
+                            let entry = offset_to_entry.remove(&offset).unwrap();
+                            if let Some(loaded_addresses) = entry.loaded_addresses {
+                                unsafe { loaded_addresses.free(allocator) };
+                            }
+                            unsafe { tx_ptr.free(allocator) };
+                            continue;
+                        }
+                        queue.push_back(offset);
+                    }
+                }
             }
             worker_message_types::CHECK_RESPONSE => {
                 assert!(processed);
@@ -486,7 +565,7 @@ mod utils {
 
     use agave_scheduler_bindings::{
         SharablePubkeys, TransactionResponseRegion,
-        worker_message_types::{self, CheckResponse},
+        worker_message_types::{self, CheckResponse, ExecutionResponse},
     };
     use rts_alloc::Allocator;
     use solana_pubkey::Pubkey;
@@ -514,6 +593,39 @@ mod utils {
 
         pub unsafe fn free(self, allocator: &Allocator) {
             unsafe { allocator.free(self.ptr.cast()) };
+        }
+    }
+
+    pub struct ExecutionResponsesPtr<'a> {
+        ptr: NonNull<ExecutionResponse>,
+        count: usize,
+        allocator: &'a Allocator,
+    }
+
+    impl<'a> ExecutionResponsesPtr<'a> {
+        pub unsafe fn from_transaction_response_region(
+            transaction_response_region: &TransactionResponseRegion,
+            allocator: &'a Allocator,
+        ) -> Self {
+            debug_assert!(
+                transaction_response_region.tag == worker_message_types::EXECUTION_RESPONSE
+            );
+
+            Self {
+                ptr: allocator
+                    .ptr_from_offset(transaction_response_region.transaction_responses_offset)
+                    .cast(),
+                count: transaction_response_region.num_transaction_responses as usize,
+                allocator,
+            }
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = &ExecutionResponse> {
+            unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }.iter()
+        }
+
+        pub fn free_wrapper(self) {
+            unsafe { self.allocator.free(self.ptr.cast()) }
         }
     }
 
