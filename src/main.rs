@@ -441,7 +441,7 @@ fn schedule(
         .for_each(|worker| worker.pack_to_worker.sync());
 
     let mut attempted = 0;
-    let mut working_batches = vec![None; workers.len()];
+    let mut working_batches = (0..workers.len()).map(|_| None).collect::<Vec<_>>();
     const MAX_ATTEMPTED: usize = 10_000;
 
     while attempted < MAX_ATTEMPTED {
@@ -469,32 +469,21 @@ fn schedule(
 
         let working_batch = &mut working_batches[thread_index];
         if working_batch.is_none() {
-            let pack_to_worker = &mut workers[thread_index].pack_to_worker;
-            let mut reserve_attempt = unsafe { pack_to_worker.reserve() };
-            if reserve_attempt.is_none() {
-                pack_to_worker.sync();
-                pack_to_worker.commit();
-                reserve_attempt = unsafe { pack_to_worker.reserve() };
-            }
-            let msg = reserve_attempt.map(|mut msg| {
-                // allocate a max-sized batch, and we just push in there.
-                let batch_region = allocator
-                    .allocate(
-                        (core::mem::size_of::<SharableTransactionRegion>()
-                            * MAX_TRANSACTIONS_PER_MESSAGE) as u32,
-                    )
-                    .expect("failed to allocate");
-                {
-                    let msg = unsafe { msg.as_mut() };
-                    msg.batch.num_transactions = 0;
-                    msg.batch.transactions_offset = unsafe { allocator.offset(batch_region) };
-                    msg.flags = pack_message_flags::EXECUTE;
-                    msg.max_working_slot = u64::MAX;
-                }
-                msg
+            // allocate a max-sized batch, and we just push in there.
+            let batch_region = allocator
+                .allocate(
+                    (core::mem::size_of::<SharableTransactionRegion>()
+                        * MAX_TRANSACTIONS_PER_MESSAGE) as u32,
+                )
+                .expect("failed to allocate");
+            *working_batch = Some(PackToWorkerMessage {
+                flags: pack_message_flags::EXECUTE,
+                max_working_slot: u64::MAX,
+                batch: SharableTransactionBatchRegion {
+                    num_transactions: 0,
+                    transactions_offset: unsafe { allocator.offset(batch_region) },
+                },
             });
-
-            *working_batch = msg;
         }
 
         let Some(message) = working_batch.as_mut() else {
@@ -506,7 +495,6 @@ fn schedule(
             queue.push_back(offset);
             continue;
         };
-        let message = unsafe { message.as_mut() };
 
         unsafe {
             allocator
@@ -522,14 +510,28 @@ fn schedule(
         in_progress[thread_index] += 1;
 
         if usize::from(message.batch.num_transactions) >= MAX_TRANSACTIONS_PER_MESSAGE {
-            *working_batch = None;
-            workers[thread_index].pack_to_worker.commit();
+            let worker = &mut workers[thread_index];
+            worker.pack_to_worker.sync();
+            if worker
+                .pack_to_worker
+                .try_write(working_batch.take().expect("must be some"))
+                .is_err()
+            {
+                panic!("agave too far behind")
+            };
+            worker.pack_to_worker.commit();
         };
     }
 
-    workers
-        .iter_mut()
-        .for_each(|worker| worker.pack_to_worker.commit());
+    for (working_batch, worker) in working_batches.into_iter().zip(workers.iter_mut()) {
+        if let Some(working_batch) = working_batch {
+            worker.pack_to_worker.sync();
+            if worker.pack_to_worker.try_write(working_batch).is_err() {
+                panic!("agave too far behind");
+            }
+            worker.pack_to_worker.commit();
+        }
+    }
 }
 
 fn send_resolve_requests(
@@ -537,25 +539,26 @@ fn send_resolve_requests(
     worker: &mut ClientWorkerSession,
     txs: &[SharableTransactionRegion],
 ) {
-    let Some(message_ptr) = (unsafe { worker.pack_to_worker.reserve() }) else {
-        panic!("agave too far behind");
-    };
-
     let Some(batch_ptr) = allocator.allocate(core::mem::size_of_val(txs) as u32) else {
         panic!("failed to allocate");
     };
     unsafe { core::ptr::copy_nonoverlapping(txs.as_ptr(), batch_ptr.cast().as_ptr(), txs.len()) };
 
-    unsafe {
-        message_ptr.write(PackToWorkerMessage {
+    worker.pack_to_worker.sync();
+    if worker
+        .pack_to_worker
+        .try_write(PackToWorkerMessage {
             flags: pack_message_flags::CHECK | check_flags::LOAD_ADDRESS_LOOKUP_TABLES,
             max_working_slot: u64::MAX,
             batch: SharableTransactionBatchRegion {
                 num_transactions: txs.len() as u8,
-                transactions_offset: allocator.offset(batch_ptr),
+                transactions_offset: unsafe { allocator.offset(batch_ptr) },
             },
         })
-    };
+        .is_err()
+    {
+        panic!("agave too far behind");
+    }
     worker.pack_to_worker.commit();
 }
 
