@@ -5,12 +5,12 @@ version = 4
 [[package]]
 name = "agave-scheduler-bindings"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
+source = "git+https://github.com/anza-xyz/agave.git?rev=dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a#dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a"
 
 [[package]]
 name = "agave-scheduling-utils"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
+source = "git+https://github.com/anza-xyz/agave.git?rev=dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a#dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a"
 dependencies = [
  "agave-scheduler-bindings",
  "agave-transaction-view",
@@ -27,7 +27,7 @@ dependencies = [
 [[package]]
 name = "agave-transaction-view"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
+source = "git+https://github.com/anza-xyz/agave.git?rev=dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a#dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -876,7 +876,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-transaction"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
+source = "git+https://github.com/anza-xyz/agave.git?rev=dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a#dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -948,7 +948,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-context"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
+source = "git+https://github.com/anza-xyz/agave.git?rev=dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a#dcd98dcb63fb7c7e8320ccba7f5c25d56a2bc73a"
 dependencies = [
  "bincode",
  "serde",
