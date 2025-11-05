@@ -34,6 +34,7 @@ use utils::*;
 
 const NUM_WORKERS: usize = 5;
 const QUEUE_CAPACITY: usize = 100_000;
+const SLOT_DISTANCE_THRESHOLD: u64 = 20;
 
 fn main() {
     // Collect command line arguments
@@ -99,8 +100,12 @@ fn main() {
             );
         }
 
-        if let Some(new_is_leader) = handle_progress_message(&mut progress_tracker) {
+        let mut should_clear = false;
+        if let Some((new_is_leader, slots_until_leader)) =
+            handle_progress_message(&mut progress_tracker)
+        {
             is_leader = new_is_leader;
+            should_clear = slots_until_leader > SLOT_DISTANCE_THRESHOLD;
         }
 
         if is_leader {
@@ -112,6 +117,8 @@ fn main() {
                 &mut account_locks,
                 &mut in_progress,
             );
+        } else if should_clear {
+            clear_queue(allocator, &mut queue, &mut offset_to_entry);
         }
     }
 }
@@ -408,20 +415,26 @@ fn handle_worker_messages(
     worker.worker_to_pack.finalize();
 }
 
-fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> Option<bool> {
+fn handle_progress_message(
+    progress_tracker: &mut Consumer<ProgressMessage>,
+) -> Option<(bool, u64)> {
     progress_tracker.sync();
 
     let mut new_is_leader = None;
+    let mut slots_until_leader = u64::MAX;
     let message_count = progress_tracker.len();
     for _ in 0..(message_count.saturating_sub(1)) {
         let _ = progress_tracker.try_read();
     }
     if let Some(message) = progress_tracker.try_read() {
         new_is_leader = Some(message.leader_state == agave_scheduler_bindings::IS_LEADER);
+        slots_until_leader = message
+            .next_leader_slot
+            .saturating_sub(message.current_slot);
     }
 
     progress_tracker.finalize();
-    new_is_leader
+    new_is_leader.map(|is_leader| (is_leader, slots_until_leader))
 }
 
 fn schedule(
@@ -531,6 +544,20 @@ fn schedule(
             }
             worker.pack_to_worker.commit();
         }
+    }
+}
+
+fn clear_queue(
+    allocator: &Allocator,
+    queue: &mut VecDeque<usize>,
+    offset_to_entry: &mut HashMap<usize, TransactionEntry>,
+) {
+    while let Some(offset) = queue.pop_front() {
+        let entry = offset_to_entry.remove(&offset).expect("entry must exist");
+        if let Some(loaded_addresses) = entry.loaded_addresses {
+            unsafe { loaded_addresses.free(allocator) };
+        }
+        unsafe { entry.view.into_inner_data().free(allocator) };
     }
 }
 
