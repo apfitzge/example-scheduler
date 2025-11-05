@@ -5,12 +5,12 @@ version = 4
 [[package]]
 name = "agave-scheduler-bindings"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=4dc5b0efac934282579433de8c4d4753e7052397#4dc5b0efac934282579433de8c4d4753e7052397"
+source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
 
 [[package]]
 name = "agave-scheduling-utils"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=4dc5b0efac934282579433de8c4d4753e7052397#4dc5b0efac934282579433de8c4d4753e7052397"
+source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
 dependencies = [
  "agave-scheduler-bindings",
  "agave-transaction-view",
@@ -27,7 +27,7 @@ dependencies = [
 [[package]]
 name = "agave-transaction-view"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=4dc5b0efac934282579433de8c4d4753e7052397#4dc5b0efac934282579433de8c4d4753e7052397"
+source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -399,9 +399,9 @@ dependencies = [
 
 [[package]]
 name = "rts-alloc"
-version = "0.2.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c55727ea58e2c9c131d8f003dab5aaa7056d99f8292bc6a5dfb299cefe55e60"
+checksum = "9cd8c332d71e3025b63eb4df047f91ce34873b196dd59b07540a91756ba97e05"
 dependencies = [
  "libc",
 ]
@@ -471,9 +471,9 @@ dependencies = [
 
 [[package]]
 name = "shaq"
-version = "0.2.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014fb38bb8370732f76c67752106d2a4b25cc1891ec489c7fc5ab23b27e90a75"
+checksum = "3722c79f507ee6b701d95e52d9106744d27666187e89e45a52a53745a10f71bd"
 dependencies = [
  "libc",
 ]
@@ -876,7 +876,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-transaction"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=4dc5b0efac934282579433de8c4d4753e7052397#4dc5b0efac934282579433de8c4d4753e7052397"
+source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -948,7 +948,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-context"
 version = "4.0.0-alpha.0"
-source = "git+https://github.com/anza-xyz/agave.git?rev=4dc5b0efac934282579433de8c4d4753e7052397#4dc5b0efac934282579433de8c4d4753e7052397"
+source = "git+https://github.com/anza-xyz/agave.git?rev=178da9add8af30d0071f115ddfe5b089d5ef94db#178da9add8af30d0071f115ddfe5b089d5ef94db"
 dependencies = [
  "bincode",
  "serde",

@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agave-scheduler-bindings = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397", features = [
+agave-scheduler-bindings = { git = "https://github.com/anza-xyz/agave.git", rev = "178da9add8af30d0071f115ddfe5b089d5ef94db", features = [
     "agave-unstable-api",
 ] }
-agave-scheduling-utils = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397", features = [
+agave-scheduling-utils = { git = "https://github.com/anza-xyz/agave.git", rev = "178da9add8af30d0071f115ddfe5b089d5ef94db", features = [
     "agave-unstable-api",
 ] }
-agave-transaction-view = { git = "https://github.com/anza-xyz/agave.git", rev = "4dc5b0efac934282579433de8c4d4753e7052397", features = [
+agave-transaction-view = { git = "https://github.com/anza-xyz/agave.git", rev = "178da9add8af30d0071f115ddfe5b089d5ef94db", features = [
     "agave-unstable-api",
 ] }
-rts-alloc = "0.2.0"
-shaq = "0.2.0"
+rts-alloc = "1.0.0"
+shaq = "1.0.0"
 signal-hook = "0.3.18"
 solana-pubkey = "3.0.0"

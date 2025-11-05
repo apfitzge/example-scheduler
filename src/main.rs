@@ -1,7 +1,6 @@
 use agave_scheduler_bindings::{
     MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, ProgressMessage,
     SharableTransactionBatchRegion, SharableTransactionRegion, TpuToPackMessage,
-    WorkerToPackMessage,
     pack_message_flags::{self, check_flags},
     processed_codes,
     worker_message_types::{
@@ -12,6 +11,7 @@ use agave_scheduling_utils::{
     handshake::{
         ClientLogon,
         client::{ClientSession, ClientWorkerSession},
+        logon_flags,
     },
     thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadSet},
     transaction_ptr::{TransactionPtr, TransactionPtrBatch},
@@ -61,10 +61,11 @@ fn main() {
             worker_count: NUM_WORKERS,
             allocator_size: 30 * 1024 * 1024 * 1024,
             allocator_handles: 1,
-            tpu_to_pack_size: shaq::minimum_file_size::<TpuToPackMessage>(64 * 1024 * 1024),
-            progress_tracker_size: shaq::minimum_file_size::<ProgressMessage>(20 * 64),
-            pack_to_worker_size: shaq::minimum_file_size::<PackToWorkerMessage>(64 * 1024),
-            worker_to_pack_size: shaq::minimum_file_size::<WorkerToPackMessage>(64 * 1024),
+            tpu_to_pack_capacity: 60 * 1024 * 1024,
+            progress_tracker_capacity: 20 * 64,
+            pack_to_worker_capacity: 64 * 1024,
+            worker_to_pack_capacity: 64 * 1024,
+            flags: logon_flags::REROUTE_VOTES,
         },
         Duration::from_secs(2),
     )
@@ -181,8 +182,6 @@ fn handle_tpu_messages(
     let mut txs_to_resolve = Vec::with_capacity(MAX_TRANSACTIONS_PER_MESSAGE);
 
     while let Some(message) = tpu_to_pack.try_read() {
-        let message = unsafe { message.as_ref() };
-
         // If at capacity, we will just drop the transaction here.
         let tx_ptr = unsafe {
             TransactionPtr::from_sharable_transaction_region(&message.transaction, allocator)
@@ -247,8 +246,6 @@ fn handle_worker_messages(
     worker.worker_to_pack.sync();
 
     while let Some(message) = worker.worker_to_pack.try_read() {
-        let message = unsafe { message.as_ref() };
-
         let batch = unsafe {
             TransactionPtrBatch::from_sharable_transaction_batch_region(&message.batch, allocator)
         };
@@ -403,6 +400,9 @@ fn handle_worker_messages(
                 panic!("agave sent a message with tag we do not understand!");
             }
         }
+        unsafe {
+            allocator.free(allocator.ptr_from_offset(message.batch.transactions_offset));
+        }
     }
 
     worker.worker_to_pack.finalize();
@@ -416,8 +416,7 @@ fn handle_progress_message(progress_tracker: &mut Consumer<ProgressMessage>) -> 
     for _ in 0..(message_count.saturating_sub(1)) {
         let _ = progress_tracker.try_read();
     }
-    if let Some(most_recent_message) = progress_tracker.try_read() {
-        let message = unsafe { most_recent_message.as_ref() };
+    if let Some(message) = progress_tracker.try_read() {
         new_is_leader = Some(message.leader_state == agave_scheduler_bindings::IS_LEADER);
     }
 
@@ -471,11 +470,11 @@ fn schedule(
         let working_batch = &mut working_batches[thread_index];
         if working_batch.is_none() {
             let pack_to_worker = &mut workers[thread_index].pack_to_worker;
-            let mut reserve_attempt = pack_to_worker.reserve();
+            let mut reserve_attempt = unsafe { pack_to_worker.reserve() };
             if reserve_attempt.is_none() {
                 pack_to_worker.sync();
                 pack_to_worker.commit();
-                reserve_attempt = pack_to_worker.reserve();
+                reserve_attempt = unsafe { pack_to_worker.reserve() };
             }
             let msg = reserve_attempt.map(|mut msg| {
                 // allocate a max-sized batch, and we just push in there.
@@ -538,7 +537,7 @@ fn send_resolve_requests(
     worker: &mut ClientWorkerSession,
     txs: &[SharableTransactionRegion],
 ) {
-    let Some(message_ptr) = worker.pack_to_worker.reserve() else {
+    let Some(message_ptr) = (unsafe { worker.pack_to_worker.reserve() }) else {
         panic!("agave too far behind");
     };
 
