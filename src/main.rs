@@ -61,7 +61,7 @@ fn main() {
             worker_count: NUM_WORKERS,
             allocator_size: 30 * 1024 * 1024 * 1024,
             allocator_handles: 1,
-            tpu_to_pack_capacity: 60 * 1024 * 1024,
+            tpu_to_pack_capacity: 128 * 1024,
             progress_tracker_capacity: 20 * 64,
             pack_to_worker_capacity: 64 * 1024,
             worker_to_pack_capacity: 64 * 1024,
